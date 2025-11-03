@@ -6,21 +6,8 @@
 #include <string>
 #include <time.h>
 
-#ifndef RA_NOPROGRESS
- #include <ShlObj.h>
-#else
- #define IProgressDialog void
-#endif
-
 #ifndef CCONV
 #define CCONV __cdecl
-#endif
-
-#if defined(_M_X64) || defined(__amd64__)
- #define RA_X64
- #define RA_INT_DLL L"RA_Integration-x64.dll"
-#else
- #define RA_INT_DLL L"RA_Integration.dll"
 #endif
 
 // Initialization
@@ -312,58 +299,10 @@ void RA_DisableHardcore()
         _RA_WarnDisableHardcore(nullptr);
 }
 
-#ifndef RA_NOPROGRESS
-
-static void FormatByteSize(DWORD nSize, wchar_t* sBuffer, size_t nBufferSize)
-{
-    if (nSize < 1024)
-    {
-        swprintf_s(sBuffer, nBufferSize, L"%u bytes", nSize);
-        return;
-    }
-
-    float fSize = nSize;
-    fSize /= 1024.0;
-    if (fSize < 1024.0)
-    {
-        swprintf_s(sBuffer, nBufferSize, L"%.2f KB", fSize);
-        return;
-    }
-
-    fSize /= 1024.0;
-    swprintf_s(sBuffer, nBufferSize, L"%.2f MB", fSize);
-}
-
-static void SetProgressMessage(IProgressDialog* pProgressDialog, DWORD nProgress, DWORD nMax)
-{
-    wchar_t sNum[32];
-    std::wstring sMessage;
-
-    FormatByteSize(nProgress, sNum, sizeof(sNum) / sizeof(sNum[0]));
-    sMessage.append(sNum);
-    sMessage.append(L" of ");
-
-    FormatByteSize(nMax, sNum, sizeof(sNum) / sizeof(sNum[0]));
-    sMessage.append(sNum);
-
-    pProgressDialog->SetLine(2, sMessage.c_str(), FALSE, NULL);
-}
-
-#endif
-
-static size_t DownloadToFile(char* pData, size_t nDataSize, void* pUserData, DWORD* pStatusCode)
+static size_t DownloadToFile(char* pData, size_t nDataSize, void* pUserData)
 {
     FILE* file = (FILE*)pUserData;
-    size_t nBytesWritten = fwrite(pData, 1, nDataSize, file);
-    if (nBytesWritten != nDataSize)
-    {
-        std::string sMessage;
-        sMessage = "Error " + std::to_string(errno) + " writing file: " + strerror(errno);
-        MessageBoxA(nullptr, sMessage.c_str(), "Error", MB_OK | MB_ICONERROR);
-        *pStatusCode = 0;
-    }
-
-    return nBytesWritten;
+    return fwrite(pData, 1, nDataSize, file);
 }
 
 typedef struct DownloadBuffer
@@ -373,7 +312,7 @@ typedef struct DownloadBuffer
     size_t nOffset;
 } DownloadBuffer;
 
-static size_t DownloadToBuffer(char* pData, size_t nDataSize, void* pUserData, DWORD* pStatusCode)
+static size_t DownloadToBuffer(char* pData, size_t nDataSize, void* pUserData)
 {
     DownloadBuffer* pBuffer = (DownloadBuffer*)pUserData;
     const size_t nRemaining = pBuffer->nBufferSize - pBuffer->nOffset;
@@ -389,10 +328,10 @@ static size_t DownloadToBuffer(char* pData, size_t nDataSize, void* pUserData, D
     return nDataSize;
 }
 
-typedef size_t (DownloadFunc)(char* pData, size_t nDataSize, void* pUserData, DWORD* pStatusCode);
+typedef size_t (DownloadFunc)(char* pData, size_t nDataSize, void* pUserData);
 
 static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage, const char* sPostData,
-  DownloadFunc fnDownload, void* pDownloadUserData, DWORD* pBytesRead, DWORD* pStatusCode, IProgressDialog* pProgressDialog)
+  DownloadFunc fnDownload, void* pDownloadUserData, DWORD* pBytesRead, DWORD* pStatusCode)
 {
     BOOL bResults = FALSE, bSuccess = FALSE;
     HINTERNET hSession = nullptr, hConnect = nullptr, hRequest = nullptr;
@@ -445,8 +384,6 @@ static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage,
         mbstowcs_s(&nTemp, wBuffer, sizeof(wBuffer) / sizeof(wBuffer[0]), sHostName, nHostnameLen);
 #else
         nTemp = mbstowcs(wBuffer, sHostName, nHostnameLen);
-        if (nTemp > 0)
-            wBuffer[nTemp] = '\0';
 #endif
 
         if (nTemp > 0)
@@ -465,8 +402,6 @@ static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage,
             mbstowcs_s(&nTemp, wBuffer, sizeof(wBuffer) / sizeof(wBuffer[0]), sRequestedPage, strlen(sRequestedPage) + 1);
 #else
             nTemp = mbstowcs(wBuffer, sRequestedPage, strlen(sRequestedPage) + 1);
-            if (nTemp > 0)
-                wBuffer[nTemp] = '\0';
 #endif
 
             hRequest = WinHttpOpenRequest(hConnect,
@@ -504,28 +439,12 @@ static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage,
                 }
                 else
                 {
-                    const DWORD nBufferSize = 16384;
-                    char* pBuffer = (char*)malloc(nBufferSize);
+                    char buffer[16384];
                     DWORD dwSize = sizeof(DWORD);
                     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, pStatusCode, &dwSize, WINHTTP_NO_HEADER_INDEX);
-                    bSuccess = (*pStatusCode == 200);
-                    const DWORD nDefaultTotalBytes = 3 * 1024 * 1024;
-                    DWORD nTotalBytes = nDefaultTotalBytes;
 
-#ifndef RA_NOPROGRESS
-                    if (pProgressDialog)
-                    {
-                        dwSize = nBufferSize;
-                        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, pBuffer, &dwSize, WINHTTP_NO_HEADER_INDEX))
-                        {
-                            nTotalBytes = wcstoul((const wchar_t*)pBuffer, NULL, 10);
-
-                            SetProgressMessage(pProgressDialog, 0, nTotalBytes);
-                        }
-                    }
-#endif
-
-                    while (bSuccess)
+                    bSuccess = TRUE;
+                    do
                     {
                         nBytesAvailable = 0;
                         WinHttpQueryDataAvailable(hRequest, &nBytesAvailable);
@@ -534,17 +453,20 @@ static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage,
 
                         do
                         {
-                            if (nBytesAvailable > nBufferSize)
-                                nBytesToRead = nBufferSize;
+                            if (nBytesAvailable > sizeof(buffer))
+                                nBytesToRead = sizeof(buffer);
                             else
                                 nBytesToRead = nBytesAvailable;
 
                             nBytesFetched = 0;
-                            if (WinHttpReadData(hRequest, pBuffer, nBytesToRead, &nBytesFetched))
+                            if (WinHttpReadData(hRequest, buffer, nBytesToRead, &nBytesFetched))
                             {
-                                size_t nBytesWritten = fnDownload(pBuffer, nBytesFetched, pDownloadUserData, pStatusCode);
+                                size_t nBytesWritten = fnDownload(buffer, nBytesFetched, pDownloadUserData);
                                 if (nBytesWritten < nBytesFetched)
                                 {
+                                    if (*pStatusCode == 200)
+                                        *pStatusCode = 998;
+
                                     bSuccess = FALSE;
                                     break;
                                 }
@@ -560,27 +482,8 @@ static BOOL DoBlockingHttpCall(const char* sHostUrl, const char* sRequestedPage,
                                 bSuccess = FALSE;
                                 break;
                             }
-
-#ifndef RA_NOPROGRESS
-                            if (pProgressDialog)
-                            {
-                                if (pProgressDialog->HasUserCancelled())
-                                {
-                                    bSuccess = FALSE;
-                                    *pStatusCode = 0;
-                                    break;
-                                }
-
-                                pProgressDialog->SetProgress(*pBytesRead, nTotalBytes);
-
-                                if (nTotalBytes != nDefaultTotalBytes)
-                                    SetProgressMessage(pProgressDialog, *pBytesRead, nTotalBytes);
-                            }
-#endif
                         } while (nBytesAvailable > 0);
-                    };
-
-                    free(pBuffer);
+                    } while (TRUE);
                 }
 
                 WinHttpCloseHandle(hRequest);
@@ -628,7 +531,7 @@ static BOOL DoBlockingHttpCallWithRetry(const char* sHostUrl, const char* sReque
         downloadBuffer.pBuffer = pBufferOut;
         downloadBuffer.nBufferSize = nBufferOutSize;
 
-        if (DoBlockingHttpCall(sHostUrl, sRequestedPage, sPostData, DownloadToBuffer, &downloadBuffer, pBytesRead, pStatusCode, NULL) != FALSE)
+        if (DoBlockingHttpCall(sHostUrl, sRequestedPage, sPostData, DownloadToBuffer, &downloadBuffer, pBytesRead, pStatusCode) != FALSE)
         {
             // Null-terminate the buffer for logging
             if (downloadBuffer.nOffset < nBufferOutSize)
@@ -657,54 +560,26 @@ static BOOL DoBlockingHttpCallWithRetry(const char* sHostUrl, const char* sReque
 }
 
 static BOOL DoBlockingHttpCallWithRetry(const char* sHostUrl, const char* sRequestedPage, const char* sPostData,
-  FILE* pFile, DWORD* pBytesRead, DWORD* pStatusCode, const wchar_t* sMessage)
+  FILE* pFile, DWORD* pBytesRead, DWORD* pStatusCode)
 {
-    IProgressDialog* pProgressDialog = NULL;
-#ifndef RA_NOPROGRESS
-    HRESULT hrInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    HRESULT hr = CoCreateInstance(CLSID_ProgressDialog, NULL, CLSCTX_INPROC_SERVER, IID_IProgressDialog, (LPVOID*)&pProgressDialog);
+  int nRetries = 4;
+  do
+  {
+      fseek(pFile, 0, SEEK_SET);
+      if (DoBlockingHttpCall(sHostUrl, sRequestedPage, sPostData, DownloadToFile, pFile, pBytesRead, pStatusCode) != FALSE)
+        return TRUE;
 
-    if (SUCCEEDED(hr))
-    {
-        if (sMessage)
-            pProgressDialog->SetLine(1, sMessage, FALSE, NULL);
-        pProgressDialog->StartProgressDialog(NULL, NULL, PROGDLG_NORMAL, NULL);
-    }
-#endif
+      if (!IsNetworkError(*pStatusCode))
+        return FALSE;
 
-    BOOL success = FALSE;
-    int nRetries = 4;
-    do
-    {
-        fseek(pFile, 0, SEEK_SET);
-        if (DoBlockingHttpCall(sHostUrl, sRequestedPage, sPostData, DownloadToFile, pFile, pBytesRead, pStatusCode, pProgressDialog) != FALSE)
-        {
-            success = TRUE;
-            break;
-        }
+      --nRetries;
+  } while (nRetries);
 
-        if (!IsNetworkError(*pStatusCode))
-            break;
-
-        --nRetries;
-    } while (nRetries);
-
-#ifndef RA_NOPROGRESS
-    if (pProgressDialog)
-    {
-        pProgressDialog->StopProgressDialog();
-        pProgressDialog->Release();
-    }
-
-    if (hrInit == S_OK)
-        CoUninitialize();
-#endif
-
-    return success;
+  return FALSE;
 }
 
 #ifndef RA_UTEST
-static std::wstring GetIntegrationPath(const wchar_t* sFilename)
+static std::wstring GetIntegrationPath()
 {
     wchar_t sBuffer[2048];
     DWORD iIndex = GetModuleFileNameW(0, sBuffer, 2048);
@@ -712,9 +587,9 @@ static std::wstring GetIntegrationPath(const wchar_t* sFilename)
         --iIndex;
 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
-    wcscpy_s(&sBuffer[iIndex], sizeof(sBuffer)/sizeof(sBuffer[0]) - iIndex, sFilename);
+    wcscpy_s(&sBuffer[iIndex], sizeof(sBuffer)/sizeof(sBuffer[0]) - iIndex, L"RA_Integration.dll");
 #else
-    wcscpy(&sBuffer[iIndex], sFilename);
+    wcscpy(&sBuffer[iIndex], L"RA_Integration.dll");
 #endif
 
     return std::wstring(sBuffer);
@@ -724,21 +599,15 @@ static std::wstring GetIntegrationPath(const wchar_t* sFilename)
 static void FetchIntegrationFromWeb(char* sLatestVersionUrl, DWORD* pStatusCode)
 {
     DWORD nBytesRead = 0;
-    const std::wstring sDownloadFilename = GetIntegrationPath(RA_INT_DLL L".download");
-    const std::wstring sOldFilename = GetIntegrationPath(RA_INT_DLL L".old");
-    const std::wstring sNewFilename = GetIntegrationPath(RA_INT_DLL);
-    std::wstring sFilename = sNewFilename;
-
-#ifdef RA_X64
-    if (GetFileAttributesW(sFilename.c_str()) == INVALID_FILE_ATTRIBUTES)
-        sFilename = GetIntegrationPath(L"RA_Integration.dll");
-#endif
+    const wchar_t* sDownloadFilename = L"RA_Integration.download";
+    const wchar_t* sFilename = L"RA_Integration.dll";
+    const wchar_t* sOldFilename = L"RA_Integration.old";
 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
     FILE* pf;
-    errno_t nErr = _wfopen_s(&pf, sDownloadFilename.c_str(), L"wb");
+    errno_t nErr = _wfopen_s(&pf, sDownloadFilename, L"wb");
 #else
-    FILE* pf = _wfopen(sDownloadFilename.c_str(), L"wb");
+    FILE* pf = _wfopen(sDownloadFilename, L"wb");
 #endif
 
     if (!pf)
@@ -747,13 +616,12 @@ static void FetchIntegrationFromWeb(char* sLatestVersionUrl, DWORD* pStatusCode)
         wchar_t sErrBuffer[2048];
         _wcserror_s(sErrBuffer, sizeof(sErrBuffer) / sizeof(sErrBuffer[0]), nErr);
 
-        std::wstring sErrMsg = std::wstring(L"Unable to write " RA_INT_DLL L".download\n") + sErrBuffer;
+        std::wstring sErrMsg = std::wstring(L"Unable to write ") + sOldFilename + L"\n" + sErrBuffer;
 #else
-        std::wstring sErrMsg = std::wstring(L"Unable to write " RA_INT_DLL L".download\n") + _wcserror(errno);
+        std::wstring sErrMsg = std::wstring(L"Unable to write ") + sOldFilename + L"\n" + _wcserror(errno);
 #endif
 
         MessageBoxW(nullptr, sErrMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
-        *pStatusCode = 0;
         return;
     }
 
@@ -769,36 +637,36 @@ static void FetchIntegrationFromWeb(char* sLatestVersionUrl, DWORD* pStatusCode)
     }
     *pSplit++ = '\0';
 
-    if (DoBlockingHttpCallWithRetry(sLatestVersionUrl, pSplit, nullptr, pf, &nBytesRead, pStatusCode, "Downloading " RA_INT_DLL))
+    if (DoBlockingHttpCallWithRetry(sLatestVersionUrl, pSplit, nullptr, pf, &nBytesRead, pStatusCode))
     {
         fclose(pf);
 
         /* wait up to one second for the DLL to actually be released - sometimes it's not immediate */
         for (int i = 0; i < 10; i++)
         {
-            if (GetModuleHandleW(sFilename.c_str()) == nullptr)
+            if (GetModuleHandleW(sFilename) == nullptr)
                 break;
 
             Sleep(100);
         }
 
         // delete the last old dll if it's still present
-        DeleteFileW(sOldFilename.c_str());
+        DeleteFileW(sOldFilename);
 
         // if there's a dll present, rename it
-        if (GetFileAttributesW(sFilename.c_str()) != INVALID_FILE_ATTRIBUTES &&
-            !MoveFileW(sFilename.c_str(), sOldFilename.c_str()))
+        if (GetFileAttributesW(sFilename) != INVALID_FILE_ATTRIBUTES &&
+            !MoveFileW(sFilename, sOldFilename))
         {
             MessageBoxW(nullptr, L"Could not rename old dll", L"Error", MB_OK | MB_ICONERROR);
         }
         // rename the download to be the dll
-        else if (!MoveFileW(sDownloadFilename.c_str(), sNewFilename.c_str()))
+        else if (!MoveFileW(sDownloadFilename, sFilename))
         {
             MessageBoxW(nullptr, L"Could not rename new dll", L"Error", MB_OK | MB_ICONERROR);
         }
 
         // delete the old dll
-        DeleteFileW(sOldFilename.c_str());
+        DeleteFileW(sOldFilename);
     }
     else
     {
@@ -830,15 +698,9 @@ static const char* CCONV _RA_InstallIntegration()
 {
     SetErrorMode(0);
 
-    std::wstring sIntegrationPath = GetIntegrationPath(RA_INT_DLL);
+    std::wstring sIntegrationPath = GetIntegrationPath();
 
     DWORD dwAttrib = GetFileAttributesW(sIntegrationPath.c_str());
-#ifdef RA_X64
-    if (dwAttrib == INVALID_FILE_ATTRIBUTES) {
-        sIntegrationPath = GetIntegrationPath(L"RA_Integration.dll");
-        dwAttrib = GetFileAttributesW(sIntegrationPath.c_str());
-    }
-#endif
     if (dwAttrib == INVALID_FILE_ATTRIBUTES)
         return "0.0";
 
@@ -846,23 +708,7 @@ static const char* CCONV _RA_InstallIntegration()
     if (g_hRADLL == nullptr)
     {
         char buffer[1024];
-        if (::GetLastError() == ERROR_BAD_EXE_FORMAT)
-        {
-#ifdef RA_X64
-          sprintf_s(buffer, sizeof(buffer), "Could not load RA_Integration-x64.dll (error %d)\nAre you trying to load the 32-bit version?\n", ::GetLastError());
-#else
-          sprintf_s(buffer, sizeof(buffer), "Could not load RA_Integration.dll (error %d)\nAre you trying to load the 64-bit version?\n", ::GetLastError());
-#endif
-        }
-        else
-        {
-#ifdef RA_X64
-            sprintf_s(buffer, sizeof(buffer), "Could not load RA_Integration-x64.dll (error %d)\n%s\n", ::GetLastError(), GetLastErrorAsString().c_str());
-#else
-            sprintf_s(buffer, sizeof(buffer), "Could not load RA_Integration.dll (error %d)\n%s\n", ::GetLastError(), GetLastErrorAsString().c_str());
-#endif
-        }
-
+        sprintf_s(buffer, 1024, "Could not load RA_Integration.dll: %d\n%s\n", ::GetLastError(), GetLastErrorAsString().c_str());
         MessageBoxA(nullptr, buffer, "Warning", MB_OK | MB_ICONWARNING);
 
         return "0.0";
@@ -1071,7 +917,7 @@ static void RA_InitCommon(HWND hMainHWND, int nEmulatorID, const char* sClientNa
     GetJsonField(buffer, "LatestVersion", sVersionBuffer, sizeof(sVersionBuffer));
     const unsigned long long nLatestDLLVer = ParseVersion(sVersionBuffer);
 
-#ifdef RA_X64
+#if defined(_M_X64) || defined(__amd64__)
     GetJsonField(buffer, "LatestVersionUrlX64", sLatestVersionUrl, sizeof(sLatestVersionUrl));
 #else
     GetJsonField(buffer, "LatestVersionUrl", sLatestVersionUrl, sizeof(sLatestVersionUrl));
@@ -1127,16 +973,13 @@ static void RA_InitCommon(HWND hMainHWND, int nEmulatorID, const char* sClientNa
     {
         FetchIntegrationFromWeb(sLatestVersionUrl, &nStatusCode);
 
-        if (nStatusCode != 0) // 0 indicates an error was already reported
-        {
-            if (nStatusCode == 200)
-                nVerInstalled = ParseVersion(_RA_InstallIntegration());
+        if (nStatusCode == 200)
+            nVerInstalled = ParseVersion(_RA_InstallIntegration());
 
-            if (nVerInstalled < nLatestDLLVer)
-            {
-                sprintf_s(buffer, sizeof(buffer), "Failed to update toolset (status code %u).", nStatusCode);
-                MessageBoxA(hMainHWND, buffer, "Error", MB_OK | MB_ICONERROR);
-            }
+        if (nVerInstalled < nLatestDLLVer)
+        {
+            sprintf_s(buffer, sizeof(buffer), "Failed to update toolset (status code %u).", nStatusCode);
+            MessageBoxA(hMainHWND, buffer, "Error", MB_OK | MB_ICONERROR);
         }
     }
 
@@ -1246,4 +1089,3 @@ void RA_Shutdown()
         g_hRADLL = nullptr;
     }
 }
-
