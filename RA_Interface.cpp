@@ -4,7 +4,6 @@
 #include <cassert>
 #include <stdexcept>
 #include <string>
-#include <time.h>
 
 #ifndef CCONV
 #define CCONV __cdecl
@@ -56,34 +55,6 @@ static int          (CCONV* _RA_CaptureState)(char* pBuffer, int nBufferSize) = 
 static void         (CCONV* _RA_RestoreState)(const char* pBuffer) = nullptr;
 
 static HINSTANCE g_hRADLL = nullptr;
-
-// ===== LOGGING FUNCTION =====
-static void LogServerCommunication(const char* sHostUrl, const char* sRequestedPage, 
-                                   const char* sPostData, const char* sResponse, DWORD nStatusCode)
-{
-    FILE* logFile = nullptr;
-#if defined(_MSC_VER) && _MSC_VER >= 1400
-    fopen_s(&logFile, "RAServerLog.txt", "a");
-#else
-    logFile = fopen("RAServerLog.txt", "a");
-#endif
-    if (logFile) {
-        time_t now = time(nullptr);
-        char timeStr[26];
-#if defined(_MSC_VER) && _MSC_VER >= 1400
-        ctime_s(timeStr, sizeof(timeStr), &now);
-#else
-        strcpy(timeStr, ctime(&now));
-#endif
-        fprintf(logFile, "\n========== %s", timeStr);
-        fprintf(logFile, "URL: %s%s\n", sHostUrl, sRequestedPage);
-        if (sPostData)
-            fprintf(logFile, "POST: %s\n", sPostData);
-        fprintf(logFile, "Status: %u\n", nStatusCode);
-        fprintf(logFile, "Response: %s\n", sResponse ? sResponse : "(no response)");
-        fclose(logFile);
-    }
-}
 
 void RA_AttemptLogin(int bBlocking)
 {
@@ -532,30 +503,14 @@ static BOOL DoBlockingHttpCallWithRetry(const char* sHostUrl, const char* sReque
         downloadBuffer.nBufferSize = nBufferOutSize;
 
         if (DoBlockingHttpCall(sHostUrl, sRequestedPage, sPostData, DownloadToBuffer, &downloadBuffer, pBytesRead, pStatusCode) != FALSE)
-        {
-            // Null-terminate the buffer for logging
-            if (downloadBuffer.nOffset < nBufferOutSize)
-                pBufferOut[downloadBuffer.nOffset] = '\0';
-            else
-                pBufferOut[nBufferOutSize - 1] = '\0';
-            
-            // ===== LOG SUCCESSFUL CALL =====
-            LogServerCommunication(sHostUrl, sRequestedPage, sPostData, pBufferOut, *pStatusCode);
             return TRUE;
-        }
 
         if (!IsNetworkError(*pStatusCode))
-        {
-            // ===== LOG FAILED CALL =====
-            LogServerCommunication(sHostUrl, sRequestedPage, sPostData, nullptr, *pStatusCode);
             return FALSE;
-        }
 
         --nRetries;
     } while (nRetries);
 
-    // ===== LOG RETRY EXHAUSTED =====
-    LogServerCommunication(sHostUrl, sRequestedPage, sPostData, nullptr, *pStatusCode);
     return FALSE;
 }
 
@@ -714,7 +669,7 @@ static const char* CCONV _RA_InstallIntegration()
         return "0.0";
     }
 
-    //    Install function pointers one by one
+    //	Install function pointers one by one
 
     _RA_IntegrationVersion = (const char* (CCONV*)())                                GetProcAddress(g_hRADLL, "_RA_IntegrationVersion");
     _RA_HostName = (const char* (CCONV*)())                                          GetProcAddress(g_hRADLL, "_RA_HostName");
@@ -1026,7 +981,7 @@ void RA_InstallSharedFunctions(int(*)(void), void(*fpCauseUnpause)(void), void(*
 
 void RA_Shutdown()
 {
-    //    Call shutdown on toolchain
+    //	Call shutdown on toolchain
     if (_RA_Shutdown != nullptr)
     {
 #ifdef __cplusplus
@@ -1040,7 +995,7 @@ void RA_Shutdown()
 #endif
     }
 
-    //    Clear func ptrs
+    //	Clear func ptrs
     _RA_IntegrationVersion = nullptr;
     _RA_HostName = nullptr;
     _RA_HostUrl = nullptr;
